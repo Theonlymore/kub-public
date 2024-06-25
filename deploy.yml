@@ -1,34 +1,68 @@
-apiVersion: networking.k8s.io/v1
-kind: Ingress
+apiVersion: apps/v1
+kind: Deployment
 metadata:
-  annotations:
-    traefik.ingress.kubernetes.io/frontend-entry-points: http,https
-    traefik.ingress.kubernetes.io/redirect-entry-point: https
-    traefik.ingress.kubernetes.io/redirect-permanent: "true"
-  name: nginx-ingress
-  namespace: default
+  name: cloudflare-ddns
 spec:
-  ingressClassName: traefik
-  rules:
-  - host: alex.alex.lan
-    http:
-      paths:
-      - path: /
-        pathType: Prefix
-        backend:
-          service:
-            name: nginx-service
-            port:
-              number: 80
+  replicas: 1  # Nombre de réplicas de votre application
+  selector:
+    matchLabels:
+      app: cloudflare-ddns
+  template:
+    metadata:
+      labels:
+        app: cloudflare-ddns
+    spec:
+      containers:
+        - name: cloudflare-ddns
+          image: favonia/cloudflare-ddns:latest
+          securityContext:
+            readOnlyRootFilesystem: true
+          env:
+            - name: PUID
+              value: "1000"
+            - name: PGID
+              value: "1000"
+            - name: CF_API_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: cloudflare-api-token-secret
+                  key: api-token
+            - name: DOMAINS
+              value: "eductivecloud.onlymore.net"
+            - name: PROXIED
+              value: "false"
+          resources:
+            # Configurer les limites de ressources si nécessaire
+      securityContext:
+        fsGroup: 1000
+---
+apiVersion: cert-manager.io/v1
+kind: Issuer
+metadata:
+ name: issuer-letsencrypt
+ namespace: default
+spec:
+ acme:
+   email: onlymore@gmail.com
+   server: https://acme-staging-v02.api.letsencrypt.org/directory
+   privateKeySecretRef:
+     name: key-letsencrypt
+   solvers:
+     - dns01:
+         cloudflare:
+           apiTokenSecretRef:
+             name: cloudflare-api-token-secret
+             key: api-token
 
 ---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: nginx-alex
-  namespace: default
+  name: nginx-deployment
+  labels:
+    app: nginx
 spec:
-  replicas: 1
+  replicas: 3
   selector:
     matchLabels:
       app: nginx
@@ -39,20 +73,42 @@ spec:
     spec:
       containers:
       - name: nginx
-        image: nginx:latest
+        image: nginx:1.14.2
         ports:
         - containerPort: 80
-
 ---
 apiVersion: v1
 kind: Service
 metadata:
   name: nginx-service
-  namespace: default
 spec:
   selector:
     app: nginx
   ports:
-  - protocol: TCP
+  - name: http
+    protocol: TCP
     port: 80
-    targetPort: 80
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: ingress-1
+  annotations:
+    cert-manager.io/issuer: "issuer-letsencrypt"
+spec:
+  ingressClassName: traefik
+  tls:
+    - hosts:
+         - eductivecloud.onlymore.net
+      secretName: tls-eductivecloud
+  rules:
+    - host: eductivecloud.onlymore.net
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: nginx-service
+                port:
+                  number: 80
